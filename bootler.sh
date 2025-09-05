@@ -64,7 +64,14 @@ require_root() {
 
 # Resolve a reasonable target user and home robustly
 TARGET_USER="${SUDO_USER:-${USER:-root}}"
-TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
+# Cross-platform home directory resolution
+if command -v getent >/dev/null 2>&1; then
+  TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
+elif [[ "$TARGET_USER" == "root" ]]; then
+  TARGET_HOME="/root"
+else
+  TARGET_HOME="/home/$TARGET_USER"
+fi
 [[ -n "$TARGET_HOME" ]] || TARGET_HOME="/root"
 
 run_as() { sudo -u "$TARGET_USER" -H bash -lc "$*"; }
@@ -94,10 +101,14 @@ check_os() {
     . /etc/os-release
     if [[ "${ID:-}" != "ubuntu" ]]; then
       error "This script targets Ubuntu. Detected: ${ID:-unknown}"
+      error "Bootler is designed to bootstrap fresh Ubuntu VMs (22.04/24.04 LTS)"
+      error "Please run this script on an Ubuntu system or use it as a reference for other distros"
       exit 1
     fi
   else
-    error "/etc/os-release missing; cannot verify OS"; exit 1
+    error "/etc/os-release missing; cannot verify OS"
+    error "This script requires Ubuntu. Please run on a supported Ubuntu system."
+    exit 1
   fi
 }
 
@@ -117,7 +128,7 @@ parse_args() {
       --fail2ban-trusted) F2B_TRUSTED_IPS="$2"; shift 2;;
       -h|--help)
         cat <<USAGE
-Usage: sudo ./vm-deploy-merge.sh --repo owner/repo [options]
+Usage: sudo ./bootler.sh --repo owner/repo [options]
   --repo owner/repo       GitHub slug (required)
   --project-dir DIR       Project directory (default: /opt/project)
   --server-name NAME      Public hostname or domain for reverse proxy (default: _)
@@ -666,9 +677,9 @@ EOF
 # -------------------------- Main --------------------------------------------
 main() {
   log "Starting VM Zero-to-Deploy setup..."
-  require_root
   parse_args "$@"
   check_os
+  require_root
 
   # System Preparation
   update_system
