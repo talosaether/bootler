@@ -732,8 +732,15 @@ main() {
   success "Setup completed. Repository: $PROJECT_DIR/${REPO##*/}"
   warn "If this is your first run, log out and back in so docker group membership applies to $TARGET_USER."
   if [[ "$SERVER_NAME" == "_" ]]; then
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    log "Next steps: configure .env, start your app on port $UPSTREAM_PORT, and verify via http://${ip:-<your-ip>}/"
+    # Cross-platform IP detection
+    if command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1; then
+      ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    elif command -v ip >/dev/null 2>&1; then
+      ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+    else
+      ip="<your-ip>"
+    fi
+    log "Next steps: configure .env, start your app on port $UPSTREAM_PORT, and verify via http://${ip}/"
   else
     log "Next steps: configure .env, start your app on port $UPSTREAM_PORT, and verify via http://${SERVER_NAME}/"
   fi
