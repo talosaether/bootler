@@ -266,14 +266,30 @@ setup_github_auth() {
     return 0
   fi
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    run_as "echo '$GITHUB_TOKEN' | gh auth login --hostname github.com --git-protocol ssh --with-token && gh config set git_protocol ssh"
-    success "GitHub authentication configured with token"
+    log "Attempting GitHub authentication with provided token..."
+    if run_as "echo '$GITHUB_TOKEN' | gh auth login --hostname github.com --git-protocol ssh --with-token && gh config set git_protocol ssh" 2>/dev/null; then
+      success "GitHub authentication configured with token"
+    else
+      error "GitHub token authentication failed. Token may be invalid, expired, or lack required permissions."
+      error "Required token scopes: 'admin:public_key' or 'write:public_key' for SSH key upload"
+      error "Please check your GITHUB_TOKEN or remove it to use interactive authentication"
+      warn "Continuing without GitHub authentication - SSH key upload will be skipped"
+      return 1
+    fi
   else
     if [[ -t 0 ]]; then
       warn "GITHUB_TOKEN not set; interactive login will prompt"
-      run_as "gh auth login --hostname github.com --git-protocol ssh && gh config set git_protocol ssh"
+      if run_as "gh auth login --hostname github.com --git-protocol ssh && gh config set git_protocol ssh" 2>/dev/null; then
+        success "GitHub authentication configured interactively"
+      else
+        warn "Interactive GitHub authentication failed or was cancelled"
+        warn "Continuing without GitHub authentication - SSH key upload will be skipped"
+        return 1
+      fi
     else
       warn "No TTY and no GITHUB_TOKEN; skipping gh interactive login"
+      warn "Continuing without GitHub authentication - SSH key upload will be skipped"
+      return 1
     fi
   fi
   # Force SSH for submodules and any hardcoded https://github.com URLs
@@ -698,9 +714,12 @@ main() {
 
   # Security & Authentication
   ensure_ssh_key_and_known_hosts
-  setup_github_auth
-  upload_ssh_key_to_github
-  smoke_test_github_ssh
+  if setup_github_auth; then
+    upload_ssh_key_to_github
+    smoke_test_github_ssh
+  else
+    warn "Skipping GitHub SSH key upload due to authentication failure"
+  fi
   setup_firewall
   
   # Project Setup
