@@ -267,7 +267,9 @@ setup_github_auth() {
   fi
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     log "Attempting GitHub authentication with provided token..."
-    if run_as "echo '$GITHUB_TOKEN' | gh auth login --hostname github.com --git-protocol ssh --with-token && gh config set git_protocol ssh" 2>/dev/null; then
+    # Use a temporary approach to avoid script exit on authentication failure
+    local auth_output
+    if auth_output=$(run_as "echo '$GITHUB_TOKEN' | gh auth login --hostname github.com --git-protocol ssh --with-token && gh config set git_protocol ssh" 2>&1); then
       success "GitHub authentication configured with token"
     else
       error "GitHub token authentication failed. Token may be invalid, expired, or lack required permissions."
@@ -279,7 +281,8 @@ setup_github_auth() {
   else
     if [[ -t 0 ]]; then
       warn "GITHUB_TOKEN not set; interactive login will prompt"
-      if run_as "gh auth login --hostname github.com --git-protocol ssh && gh config set git_protocol ssh" 2>/dev/null; then
+      local interactive_output
+      if interactive_output=$(run_as "gh auth login --hostname github.com --git-protocol ssh && gh config set git_protocol ssh" 2>&1); then
         success "GitHub authentication configured interactively"
       else
         warn "Interactive GitHub authentication failed or was cancelled"
