@@ -741,7 +741,7 @@ server {
     }
 
     location @app {
-        proxy_pass http://127.0.0.1:$UPSTREAM_PORT/;
+        proxy_pass http://127.0.0.1:$UPSTREAM_PORT;
         proxy_http_version 1.1;
         client_max_body_size 20m;
         proxy_buffering off;
