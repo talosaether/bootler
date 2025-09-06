@@ -366,22 +366,96 @@ clone_repository() {
   local repo_dir="$PROJECT_DIR/${REPO##*/}"
   if [[ -d "$repo_dir/.git" ]]; then
     log "Repository exists; pulling latest..."
-    run_as "cd '$repo_dir' && git fetch --prune --filter=blob:none && git pull --ff-only"
-  else
-    # Prefer gh; fall back to raw git over SSH if gh stumbles. Respect --branch if set.
-    if [[ -n "$BRANCH" ]]; then
-      run_as "cd '$PROJECT_DIR' && ( gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none -b '$BRANCH' \
-        || git clone --depth 1 --no-tags --filter=blob:none -b '$BRANCH' git@github.com:$REPO.git )"
+    if run_as "cd '$repo_dir' && git fetch --prune --filter=blob:none && git pull --ff-only" 2>/dev/null; then
+      success "Repository updated successfully"
     else
-      run_as "cd '$PROJECT_DIR' && ( gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none \
-        || git clone --depth 1 --no-tags --filter=blob:none git@github.com:$REPO.git )"
+      warn "Failed to update existing repository; continuing with current state"
+    fi
+  else
+    log "Cloning repository for the first time..."
+    local clone_success=false
+    
+    # Try GitHub CLI first (if authentication is available)
+    if command -v gh >/dev/null 2>&1 && run_as 'gh auth status >/dev/null 2>&1'; then
+      log "Attempting to clone with GitHub CLI..."
+      local gh_output
+      if [[ -n "$BRANCH" ]]; then
+        if gh_output=$(run_as "cd '$PROJECT_DIR' && gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none -b '$BRANCH'" 2>&1); then
+          clone_success=true
+          success "Repository cloned with GitHub CLI"
+        fi
+      else
+        if gh_output=$(run_as "cd '$PROJECT_DIR' && gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none" 2>&1); then
+          clone_success=true
+          success "Repository cloned with GitHub CLI"
+        fi
+      fi
+    fi
+    
+    # Fall back to SSH if GitHub CLI failed
+    if [[ "$clone_success" = false ]]; then
+      log "Attempting to clone with SSH..."
+      local ssh_output
+      if [[ -n "$BRANCH" ]]; then
+        if ssh_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none -b '$BRANCH' git@github.com:$REPO.git" 2>&1); then
+          clone_success=true
+          success "Repository cloned with SSH"
+        fi
+      else
+        if ssh_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none git@github.com:$REPO.git" 2>&1); then
+          clone_success=true
+          success "Repository cloned with SSH"
+        fi
+      fi
+    fi
+    
+    # Fall back to HTTPS if SSH failed
+    if [[ "$clone_success" = false ]]; then
+      log "Attempting to clone with HTTPS (public repository fallback)..."
+      local https_output
+      if [[ -n "$BRANCH" ]]; then
+        if https_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none -b '$BRANCH' https://github.com/$REPO.git" 2>&1); then
+          clone_success=true
+          success "Repository cloned with HTTPS"
+        fi
+      else
+        if https_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none https://github.com/$REPO.git" 2>&1); then
+          clone_success=true
+          success "Repository cloned with HTTPS"
+        fi
+      fi
+    fi
+    
+    # If all methods failed, provide helpful error message
+    if [[ "$clone_success" = false ]]; then
+      error "Failed to clone repository $REPO with all available methods"
+      error "Possible causes:"
+      error "  - Repository is private and requires authentication"
+      error "  - SSH key is not properly configured for GitHub"
+      error "  - Repository does not exist or is not accessible"
+      error "  - Network connectivity issues"
+      error ""
+      error "To fix this issue:"
+      error "  1. Ensure your SSH key is added to GitHub: ssh-keygen -t ed25519 -C 'your_email@example.com'"
+      error "  2. Add the public key to your GitHub account: cat ~/.ssh/id_ed25519.pub"
+      error "  3. For private repos, ensure you have access permissions"
+      error "  4. Check your network connection"
+      error ""
+      warn "Continuing without repository - you can clone it manually later"
+      return 1
     fi
   fi
+  
   # Initialize submodules if present
   if [[ -f "$repo_dir/.gitmodules" ]]; then
-    run_as "cd '$repo_dir' && git -c submodule.fetchJobs=4 submodule update --init --recursive --depth 1 --recommend-shallow" \
-      || warn "Submodules failed to init"
+    log "Initializing submodules..."
+    if run_as "cd '$repo_dir' && git -c submodule.fetchJobs=4 submodule update --init --recursive --depth 1 --recommend-shallow" 2>/dev/null; then
+      success "Submodules initialized"
+    else
+      warn "Submodules failed to initialize; continuing without them"
+    fi
   fi
+  
   success "Repository ready at $repo_dir"
 }
 
@@ -726,10 +800,14 @@ main() {
   setup_firewall
   
   # Project Setup
-  clone_repository
-  setup_deployment_env
-  setup_cicd_secrets
-  test_deployment_pipeline
+  if clone_repository; then
+    setup_deployment_env
+    setup_cicd_secrets
+    test_deployment_pipeline
+  else
+    warn "Skipping project setup due to repository cloning failure"
+    warn "You can manually clone the repository later and run the setup steps"
+  fi
   
   # Monitoring & Logging
   setup_monitoring
