@@ -1,7 +1,7 @@
 # Bootler
 
-_The one-command **infra bootler** that turns a fresh Ubuntu VM into a ready-to-deploy app host._  
-It installs the common stack (Docker, Node, Python, Terraform, nginx), hardens the box (UFW, fail2ban, unattended security upgrades), sets sane logs, and clones + bootstraps your GitHub repo.
+_The one-command **Linux VM hardening script** that transforms a fresh Ubuntu VM into a secure, production-ready host._  
+It installs the common development stack (Docker, Node, Python, Terraform, nginx), hardens the system (UFW, fail2ban, unattended security upgrades), sets up monitoring and logging, and prepares the environment for application deployment.
 
 > Script filename in this repo: **`bootler.sh`**
 
@@ -11,10 +11,10 @@ It installs the common stack (Docker, Node, Python, Terraform, nginx), hardens t
 
 - Updates and primes Ubuntu (22.04/24.04 LTS friendly)
 - Installs: **Docker** (+ compose plugin, log rotation), **Node LTS** (via nvm + pnpm), **Python 3** (+ pipx), **Terraform**, **Neovim**, **Git LFS**, DB clients
-- Auth: generates **SSH key**, configures **GitHub CLI**, (optionally) uploads the SSH key to GitHub
 - Security: **UFW** (with sane defaults), **fail2ban** for SSH, **unattended-upgrades**, optional **SSH password disable**, optional **swapfile**
+- SSH: generates **SSH key** for secure access
 - Observability/hygiene: **journald** size caps, **logrotate** for app logs, **systemd-timesyncd**
-- App plumbing: **clones your repo**, creates a `.env` from `.env.example` if present, installs deps, runs optional build/tests
+- Environment: creates **project directory** structure with proper permissions
 - Reverse proxy: configures **nginx** to forward to your app on a configurable upstream port (WebSocket-safe)
 
 ---
@@ -23,10 +23,6 @@ It installs the common stack (Docker, Node, Python, Terraform, nginx), hardens t
 
 ### 1) Prereqs
 - Fresh Ubuntu server (22.04/24.04) with sudo/root
-- A GitHub repo you want to deploy (e.g. `owner/repo`)
-- (Optional) A GitHub **PAT** in env var `GITHUB_TOKEN` if you want fully non-interactive auth & automatic SSH key upload  
-  - Minimum scope to upload SSH keys: `admin:public_key` (or `write:public_key`).  
-  - Repo cloning happens over SSH; the PAT is only used by `gh` to log in / upload the key.
 
 ### 2) Run it
 
@@ -37,11 +33,10 @@ cd bootler
 chmod +x bootler.sh
 
 # minimally:
-sudo ./bootler.sh --repo owner/repo
+sudo ./bootler.sh
 
 # typical:
-sudo GITHUB_TOKEN=ghp_xxx ./bootler.sh \
-  --repo owner/repo \
+sudo ./bootler.sh \
   --server-name example.com \
   --project-dir /opt/project \
   --upstream-port 8000 \
@@ -50,7 +45,7 @@ sudo GITHUB_TOKEN=ghp_xxx ./bootler.sh \
   --fail2ban-trusted "203.0.113.4 2001:db8::/32"
 ```
 
-When it finishes, Bootler will print the “next steps” and a URL to test:
+When it finishes, Bootler will print the "next steps" and a URL to test:
 - If you used `--server-name example.com`: `http://example.com/`
 - If you left the default `_`: `http://<server-ip>/`
 
@@ -64,11 +59,9 @@ When it finishes, Bootler will print the “next steps” and a URL to test:
 
 | Flag | Type | Default | What it does |
 |---|---:|---|---|
-| `--repo` | string | _(required)_ | GitHub slug `owner/repo` to clone and bootstrap. |
-| `--project-dir` | path | `/opt/project` | Where the repo and `logs/` live. Bootler also creates `/opt/project/bin` for your scripts. |
-| `--server-name` | hostname | `_` | nginx `server_name`. Use `_` for “any host” (handy for first boot or IP-only). |
+| `--project-dir` | path | `/opt/project` | Where your application and `logs/` will live. Bootler also creates `/opt/project/bin` for your scripts. |
+| `--server-name` | hostname | `_` | nginx `server_name`. Use `_` for "any host" (handy for first boot or IP-only). |
 | `--upstream-port` | int | `8000` | Port your app listens on locally; nginx proxies to `127.0.0.1:<port>`. |
-| `--branch` | string | _repo default_ | Specific branch or tag to clone (shallow). |
 | `--ssh-port` | int | `22` | Port to allow in UFW and configure in fail2ban. |
 | `--open-dev-ports` | flag | _off_ | Also open TCP **3000** and **8000** in UFW (development convenience). |
 | `--ssh-hardening` | flag | _off_ | Disables password auth in SSHD (requires an existing public key). |
@@ -79,7 +72,6 @@ When it finishes, Bootler will print the “next steps” and a URL to test:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GITHUB_TOKEN` | _(unset)_ | Personal Access Token for non-interactive `gh auth` and auto-uploading your SSH key. |
 | `SSH_KEY_EMAIL` | `dev@example.com` | Comment for the generated `~/.ssh/id_ed25519` key. |
 | `F2B_TRUSTED_IPS` | _(unset)_ | Alternative to the `--fail2ban-trusted` flag. |
 | `DEBUG` | `0` | Set to `1` to enable `set -x` shell tracing for verbose logs. |
@@ -102,27 +94,18 @@ Bootler is organized into small, idempotent functions you can skim or run indepe
 - `install_docker()` – Installs Docker Engine + compose plugin; enables service; adds user to `docker` group.
 - `install_terraform()` – Installs HashiCorp Terraform from official apt repo.
 - `install_neovim()` – Installs Neovim.
-- `install_github_cli()` – Installs GitHub CLI (`gh`).
 - `install_git_lfs()` – Installs Git LFS and runs `git lfs install`.
 - `install_database_clients()` – Installs Postgres + MySQL/MariaDB client tools.
 
 ### Security, auth & network
 - `ensure_ssh_key_and_known_hosts()` – Creates `~/.ssh/id_ed25519` if missing; pins `github.com` host key.
-- `setup_github_auth()` – Logs into `gh` (token or interactive) and forces git to prefer SSH URLs.
-- `upload_ssh_key_to_github()` – If PAT present, uploads the public key to GitHub with a hostname+date title.
-- `smoke_test_github_ssh()` – Verifies SSH handshake to `git@github.com`.
 - `setup_firewall()` – Enables UFW (IPv4/IPv6), allows 80/443 and your SSH port, optional dev ports, rate-limits SSH, turns on low-noise logging.
 - `setup_unattended_upgrades()` – Enables security auto-updates (with Ubuntu Pro ESM detection if attached).
 - `setup_fail2ban()` – Sets sane SSH bans (systemd backend), honors your trusted IPs, matches your `--ssh-port`.
 - `ssh_hardening()` – (Optional) Disables SSH password auth via `sshd_config.d/99-hardening.conf` and reloads sshd.
 
-### Project bootstrap
-- `clone_repository()` – Creates `PROJECT_DIR`, shallow-clones over SSH (or updates), initializes submodules (shallow).
-- `setup_deployment_env()` – Copies `.env.example` → `.env` if missing; sets secure permissions.
-- `setup_cicd_secrets()` – Placeholder; reminds you that CI/CD secrets are platform-specific.
-
-### Build & verify
-- `test_deployment_pipeline()` – If Python present, creates `.venv` and installs deps; if Node, installs deps (pnpm/npm) and runs `build` if defined; runs `make test` when available.
+### Project setup
+- `setup_project_directory()` – Creates `PROJECT_DIR` with proper permissions and structure.
 
 ### Observability & hygiene
 - `setup_monitoring()` – Installs htop/iotop; ensures `${PROJECT_DIR}/logs`; adds logrotate policy for `logs/*.log`.
@@ -137,7 +120,7 @@ Bootler is organized into small, idempotent functions you can skim or run indepe
 ## 📦 What gets installed & configured (at a glance)
 
 - **Paths & files**
-  - `${PROJECT_DIR}/<repo>` (your code)
+  - `${PROJECT_DIR}/` (project directory with proper permissions)
   - `${PROJECT_DIR}/logs/` (logrotate-managed)
   - `${PROJECT_DIR}/bin/` (on `PATH` via .bashrc snippet)
   - `/etc/logrotate.d/project`
@@ -189,10 +172,9 @@ Bootler is organized into small, idempotent functions you can skim or run indepe
 ## 🧯 Troubleshooting
 
 - **Docker commands require sudo?** Log out/in or `newgrp docker` to refresh your group membership.
-- **GitHub auth in automation**: provide `GITHUB_TOKEN` (with `admin:public_key`) to avoid an interactive `gh` prompt. If there’s no TTY and no token, Bootler will skip interactive login.
 - **nginx shows 502**: ensure your app is listening on `127.0.0.1:$UPSTREAM_PORT`. Try `curl -i 127.0.0.1:8000`.
 - **Port conflicts**: change `--upstream-port` or stop the process already listening on that port.
-- **SSH hardening**: only enable `--ssh-hardening` if you have a working public key on the server and in your GitHub account.
+- **SSH hardening**: only enable `--ssh-hardening` if you have a working public key on the server.
 - **UFW lockout fear**: Bootler always allows your SSH port and enables UFW last; if you changed the SSH port manually, re-run with `--ssh-port <port>`.
 
 ---
@@ -202,8 +184,7 @@ Bootler is organized into small, idempotent functions you can skim or run indepe
 **Production-ish:**
 
 ```bash
-sudo GITHUB_TOKEN=ghp_xxx ./bootler.sh \
-  --repo acme/awesome-app \
+sudo ./bootler.sh \
   --server-name app.acme.com \
   --upstream-port 8080 \
   --ssh-port 22 \
@@ -216,7 +197,6 @@ sudo GITHUB_TOKEN=ghp_xxx ./bootler.sh \
 
 ```bash
 sudo ./bootler.sh \
-  --repo acme/awesome-app \
   --open-dev-ports \
   --server-name _
 ```
@@ -231,5 +211,5 @@ MIT — do what you want, be excellent to each other.
 
 ## ❤️ Credits
 
-Built as an **infra bootler** for getting from zero-to-deploy on a clean Ubuntu host with sensible defaults and minimal fuss.
+Built as a **Linux VM hardening script** for getting from zero-to-secure on a clean Ubuntu host with sensible defaults and minimal fuss.
 

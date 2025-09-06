@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
 # ============================================================================
-# bootler.sh — Bootstrap a fresh Ubuntu VM for GitHub repository deployment
+# bootler.sh — Harden and configure a fresh Ubuntu VM for application deployment
 # ============================================================================
 # Usage:
 #   sudo ./bootler.sh \
-#     --repo owner/repo \
 #     [--project-dir /opt/project] \
 #     [--server-name example.com] \
 #     [--upstream-port 8000]
 #
 # Environment (optional):
-#   GITHUB_TOKEN       Personal access token for non-interactive gh auth
 #   SSH_KEY_EMAIL      Email comment for generated SSH key
 #
 # Notes:
 # - Script is idempotent where reasonable and safe to re-run.
-# - Uses SSH for git operations. If GITHUB_TOKEN is present and has
-#   appropriate scopes, the script will attempt to upload the SSH key.
-# - Installs Docker, Python, Node (via nvm), gh, Terraform, and common tools.
+# - Installs Docker, Python, Node (via nvm), Terraform, and common tools.
 # - Configures UFW after allowing SSH to avoid lockout.
 # - Provides optional Nginx reverse proxy with parameterized upstream.
 # ============================================================================
@@ -43,14 +39,12 @@ error()   { echo "[ERROR] $*" >&2; }
 success() { echo "[OK]    $*"; }
 
 # -------------------------- Config ------------------------------------------
-REPO=""
 PROJECT_DIR="/opt/project"
 SERVER_NAME="_"           # Use a real hostname or domain for TLS later
 UPSTREAM_PORT="8000"       # Upstream app port for reverse proxy
 SSH_KEY_EMAIL="${SSH_KEY_EMAIL:-dev@example.com}"
 OPEN_DEV_PORTS=0           # Only open 3000/8000 if explicitly requested
 SSH_PORT=22                # SSH port for UFW allow (override with --ssh-port)
-BRANCH=""                  # Optional branch/tag to clone
 SSH_HARDEN=0               # Optional: disable SSH password auth
 SWAP_MB=0                  # Optional: create swapfile of N MB if none
 F2B_TRUSTED_IPS="${F2B_TRUSTED_IPS:-}"  # Optional: fail2ban whitelist (space-separated)
@@ -116,11 +110,9 @@ check_os() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --repo)        REPO="$2"; shift 2;;
       --project-dir) PROJECT_DIR="$2"; shift 2;;
       --server-name) SERVER_NAME="$2"; shift 2;;
       --upstream-port) UPSTREAM_PORT="$2"; shift 2;;
-      --branch)      BRANCH="$2"; shift 2;;
       --ssh-port)    SSH_PORT="$2"; shift 2;;
       --open-dev-ports) OPEN_DEV_PORTS=1; shift 1;;
       --ssh-hardening) SSH_HARDEN=1; shift 1;;
@@ -128,12 +120,10 @@ parse_args() {
       --fail2ban-trusted) F2B_TRUSTED_IPS="$2"; shift 2;;
       -h|--help)
         cat <<USAGE
-Usage: sudo ./bootler.sh --repo owner/repo [options]
-  --repo owner/repo       GitHub slug (required)
+Usage: sudo ./bootler.sh [options]
   --project-dir DIR       Project directory (default: /opt/project)
   --server-name NAME      Public hostname or domain for reverse proxy (default: _)
   --upstream-port N       Upstream app port (default: 8000)
-  --branch NAME           Branch or tag to clone (default: repo default)
   --ssh-port N            SSH port to allow through UFW (default: 22)
   --open-dev-ports        Also allow 3000 and 8000 via UFW (default: off)
   --ssh-hardening         Disable SSH password logins (requires key present)
@@ -144,7 +134,6 @@ USAGE
       *) error "Unknown option: $1"; exit 1;;
     esac
   done
-  if [[ -z "$REPO" ]]; then error "--repo owner/repo is required"; exit 1; fi
 }
 
 # -------------------------- System Preparation ------------------------------
@@ -223,19 +212,6 @@ install_neovim() {
   success "Neovim installed"
 }
 
-install_github_cli() {
-  log "Installing GitHub CLI..."
-  install -m 0755 -d /etc/apt/keyrings
-  if [[ ! -f /etc/apt/keyrings/githubcli.gpg ]]; then
-    curl_retry -o /etc/apt/keyrings/githubcli.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg
-    chmod go+r /etc/apt/keyrings/githubcli.gpg
-  fi
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
-    > /etc/apt/sources.list.d/github-cli.list
-  apt_update_once
-  apt_install gh
-  success "GitHub CLI installed"
-}
 
 # -------------------------- Security & Auth ---------------------------------
 ensure_ssh_key_and_known_hosts() {
@@ -259,62 +235,7 @@ ensure_ssh_key_and_known_hosts() {
   success "SSH known_hosts updated"
 }
 
-setup_github_auth() {
-  log "Setting up GitHub authentication (SSH protocol)..."
-  if run_as 'gh auth status >/dev/null 2>&1'; then
-    success "GitHub authentication already configured"
-    return 0
-  fi
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    log "Attempting GitHub authentication with provided token..."
-    # Use a temporary approach to avoid script exit on authentication failure
-    local auth_output
-    if auth_output=$(run_as "echo '$GITHUB_TOKEN' | gh auth login --hostname github.com --git-protocol ssh --with-token && gh config set git_protocol ssh" 2>&1); then
-      success "GitHub authentication configured with token"
-    else
-      error "GitHub token authentication failed. Token may be invalid, expired, or lack required permissions."
-      error "Required token scopes: 'admin:public_key' or 'write:public_key' for SSH key upload"
-      error "Please check your GITHUB_TOKEN or remove it to use interactive authentication"
-      warn "Continuing without GitHub authentication - SSH key upload will be skipped"
-      return 1
-    fi
-  else
-    if [[ -t 0 ]]; then
-      warn "GITHUB_TOKEN not set; interactive login will prompt"
-      local interactive_output
-      if interactive_output=$(run_as "gh auth login --hostname github.com --git-protocol ssh && gh config set git_protocol ssh" 2>&1); then
-        success "GitHub authentication configured interactively"
-      else
-        warn "Interactive GitHub authentication failed or was cancelled"
-        warn "Continuing without GitHub authentication - SSH key upload will be skipped"
-        return 1
-      fi
-    else
-      warn "No TTY and no GITHUB_TOKEN; skipping gh interactive login"
-      warn "Continuing without GitHub authentication - SSH key upload will be skipped"
-      return 1
-    fi
-  fi
-  # Force SSH for submodules and any hardcoded https://github.com URLs
-  run_as "git config --global url.'ssh://git@github.com/'.insteadOf 'https://github.com/'" || true
-  run_as "git config --global url.'git@github.com:'.insteadOf 'https://github.com/'" || true
-}
 
-upload_ssh_key_to_github() {
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    log "Attempting to upload SSH public key to GitHub via gh..."
-    local pub="$TARGET_HOME/.ssh/id_ed25519.pub"
-    if [[ -f "$pub" ]]; then
-      local title; title="$(hostname)-$(date +%F)"
-      run_as "gh ssh-key add '$pub' --title '$title'" || warn "Failed to add SSH key via gh; check token scopes"
-      success "GitHub SSH key upload attempted"
-    else
-      warn "Public key not found; skipping upload"
-    fi
-  else
-    warn "GITHUB_TOKEN not set; cannot auto-upload SSH key. Public key is at $TARGET_HOME/.ssh/id_ed25519.pub"
-  fi
-}
 
 install_git_lfs() {
   log "Installing Git LFS..."
@@ -323,14 +244,6 @@ install_git_lfs() {
   success "Git LFS installed"
 }
 
-smoke_test_github_ssh() {
-  log "Verifying GitHub SSH access..."
-  if run_as 'ssh -o StrictHostKeyChecking=accept-new -T git@github.com || true' 2>&1 | grep -qi "successfully authenticated"; then
-    success "GitHub SSH OK"
-  else
-    warn "GitHub SSH handshake not confirmed. On first connect this can be normal; try again after login."
-  fi
-}
 
 setup_firewall() {
   log "Configuring UFW..."
@@ -358,154 +271,17 @@ setup_firewall() {
 }
 
 # -------------------------- Project Setup -----------------------------------
-clone_repository() {
-  log "Cloning repository $REPO..."
+setup_project_directory() {
+  log "Setting up project directory..."
   install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 750 "$PROJECT_DIR"
   # Create project bin directory for user scripts
   install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 750 "$PROJECT_DIR/bin"
-  local repo_dir="$PROJECT_DIR/${REPO##*/}"
-  if [[ -d "$repo_dir/.git" ]]; then
-    log "Repository exists; pulling latest..."
-    if run_as "cd '$repo_dir' && git fetch --prune --filter=blob:none && git pull --ff-only" 2>/dev/null; then
-      success "Repository updated successfully"
-    else
-      warn "Failed to update existing repository; continuing with current state"
-    fi
-  else
-    log "Cloning repository for the first time..."
-    local clone_success=false
-    
-    # Try GitHub CLI first (if authentication is available)
-    if command -v gh >/dev/null 2>&1 && run_as 'gh auth status >/dev/null 2>&1'; then
-      log "Attempting to clone with GitHub CLI..."
-      local gh_output
-      if [[ -n "$BRANCH" ]]; then
-        if gh_output=$(run_as "cd '$PROJECT_DIR' && gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none -b '$BRANCH'" 2>&1); then
-          clone_success=true
-          success "Repository cloned with GitHub CLI"
-        fi
-      else
-        if gh_output=$(run_as "cd '$PROJECT_DIR' && gh repo clone '$REPO' -- --depth 1 --no-tags --filter=blob:none" 2>&1); then
-          clone_success=true
-          success "Repository cloned with GitHub CLI"
-        fi
-      fi
-    fi
-    
-    # Fall back to SSH if GitHub CLI failed
-    if [[ "$clone_success" = false ]]; then
-      log "Attempting to clone with SSH..."
-      local ssh_output
-      if [[ -n "$BRANCH" ]]; then
-        if ssh_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none -b '$BRANCH' git@github.com:$REPO.git" 2>&1); then
-          clone_success=true
-          success "Repository cloned with SSH"
-        fi
-      else
-        if ssh_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none git@github.com:$REPO.git" 2>&1); then
-          clone_success=true
-          success "Repository cloned with SSH"
-        fi
-      fi
-    fi
-    
-    # Fall back to HTTPS if SSH failed
-    if [[ "$clone_success" = false ]]; then
-      log "Attempting to clone with HTTPS (public repository fallback)..."
-      local https_output
-      if [[ -n "$BRANCH" ]]; then
-        if https_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none -b '$BRANCH' https://github.com/$REPO.git" 2>&1); then
-          clone_success=true
-          success "Repository cloned with HTTPS"
-        fi
-      else
-        if https_output=$(run_as "cd '$PROJECT_DIR' && git clone --depth 1 --no-tags --filter=blob:none https://github.com/$REPO.git" 2>&1); then
-          clone_success=true
-          success "Repository cloned with HTTPS"
-        fi
-      fi
-    fi
-    
-    # If all methods failed, provide helpful error message
-    if [[ "$clone_success" = false ]]; then
-      error "Failed to clone repository $REPO with all available methods"
-      error "Possible causes:"
-      error "  - Repository is private and requires authentication"
-      error "  - SSH key is not properly configured for GitHub"
-      error "  - Repository does not exist or is not accessible"
-      error "  - Network connectivity issues"
-      error ""
-      error "To fix this issue:"
-      error "  1. Ensure your SSH key is added to GitHub: ssh-keygen -t ed25519 -C 'your_email@example.com'"
-      error "  2. Add the public key to your GitHub account: cat ~/.ssh/id_ed25519.pub"
-      error "  3. For private repos, ensure you have access permissions"
-      error "  4. Check your network connection"
-      error ""
-      warn "Continuing without repository - you can clone it manually later"
-      return 1
-    fi
-  fi
-  
-  # Initialize submodules if present
-  if [[ -f "$repo_dir/.gitmodules" ]]; then
-    log "Initializing submodules..."
-    if run_as "cd '$repo_dir' && git -c submodule.fetchJobs=4 submodule update --init --recursive --depth 1 --recommend-shallow" 2>/dev/null; then
-      success "Submodules initialized"
-    else
-      warn "Submodules failed to initialize; continuing without them"
-    fi
-  fi
-  
-  success "Repository ready at $repo_dir"
+  success "Project directory ready at $PROJECT_DIR"
 }
 
-setup_deployment_env() {
-  log "Setting up environment file..."
-  local repo_dir="$PROJECT_DIR/${REPO##*/}"
-  if [[ -f "$repo_dir/.env.example" && ! -f "$repo_dir/.env" ]]; then
-    cp "$repo_dir/.env.example" "$repo_dir/.env"
-    warn "Created .env from .env.example; review and edit as needed"
-    chown "$TARGET_USER:$TARGET_USER" "$repo_dir/.env" || true
-    chmod 640 "$repo_dir/.env" || true
-  elif [[ ! -f "$repo_dir/.env" ]]; then
-    warn "No .env.example found; consider creating $repo_dir/.env"
-  else
-    log ".env already present; leaving in place"
-    # ensure sane perms on existing file
-    chown "$TARGET_USER:$TARGET_USER" "$repo_dir/.env" 2>/dev/null || true
-    chmod 640 "$repo_dir/.env" 2>/dev/null || true
-  fi
-  success "Environment file step completed"
-}
 
-setup_cicd_secrets() {
-  log "Configuring CI/CD secrets..."
-  warn "CI/CD secrets configuration requires manual setup per platform"
-  success "CI/CD secrets step completed"
-}
 
 # -------------------------- Build & Verify ----------------------------------
-test_deployment_pipeline() {
-  log "Testing deployment pipeline..."
-  local repo_dir="$PROJECT_DIR/${REPO##*/}"
-
-  # Python project bootstrap
-  if [[ -f "$repo_dir/requirements.txt" || -f "$repo_dir/pyproject.toml" ]]; then
-    run_as "cd '$repo_dir' && python3 -m venv .venv && . .venv/bin/activate && pip install -U pip setuptools wheel && { [[ -f requirements.txt ]] && pip install -r requirements.txt || true; } && { [[ -f pyproject.toml ]] && pip install . || true; }"
-  fi
-
-  # Node project bootstrap
-  if [[ -f "$repo_dir/package.json" ]]; then
-    run_as "cd '$repo_dir' && if command -v pnpm >/dev/null 2>&1; then pnpm install --frozen-lockfile; else npm ci --no-audit --no-fund || npm install --no-audit --no-fund; fi && (npm run -s build --if-present || pnpm run -s build --if-present || true)"
-  fi
-
-  # Run tests if available
-  if [[ -f "$repo_dir/Makefile" ]] && grep -q "test" "$repo_dir/Makefile"; then
-    run_as "cd '$repo_dir' && make test" || warn "Tests failed, continuing..."
-  fi
-
-  success "Deployment pipeline tested"
-}
 
 # -------------------------- Monitoring & Logging ----------------------------
 setup_monitoring() {
@@ -785,29 +561,15 @@ main() {
   
   # Development Tools
   install_neovim
-  install_github_cli
   install_additional_tools
   install_git_lfs
 
   # Security & Authentication
   ensure_ssh_key_and_known_hosts
-  if setup_github_auth; then
-    upload_ssh_key_to_github
-    smoke_test_github_ssh
-  else
-    warn "Skipping GitHub SSH key upload due to authentication failure"
-  fi
   setup_firewall
   
   # Project Setup
-  if clone_repository; then
-    setup_deployment_env
-    setup_cicd_secrets
-    test_deployment_pipeline
-  else
-    warn "Skipping project setup due to repository cloning failure"
-    warn "You can manually clone the repository later and run the setup steps"
-  fi
+  setup_project_directory
   
   # Monitoring & Logging
   setup_monitoring
@@ -829,7 +591,7 @@ main() {
     log "SSH hardening disabled (use --ssh-hardening to enable)"
   fi
   
-  success "Setup completed. Repository: $PROJECT_DIR/${REPO##*/}"
+  success "Setup completed. Project directory: $PROJECT_DIR"
   warn "If this is your first run, log out and back in so docker group membership applies to $TARGET_USER."
   if [[ "$SERVER_NAME" == "_" ]]; then
     # Cross-platform IP detection
@@ -840,9 +602,9 @@ main() {
     else
       ip="<your-ip>"
     fi
-    log "Next steps: configure .env, start your app on port $UPSTREAM_PORT, and verify via http://${ip}/"
+    log "Next steps: deploy your application to port $UPSTREAM_PORT and verify via http://${ip}/"
   else
-    log "Next steps: configure .env, start your app on port $UPSTREAM_PORT, and verify via http://${SERVER_NAME}/"
+    log "Next steps: deploy your application to port $UPSTREAM_PORT and verify via http://${SERVER_NAME}/"
   fi
 
   # Optional: free some space from package caches
