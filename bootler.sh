@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-# vm-deploy-merge.sh — Bootstrap a fresh Ubuntu VM for GitHub repository deployment
+# bootler.sh — Bootstrap a fresh Ubuntu VM for GitHub repository deployment
 # ============================================================================
 # Usage:
-#   sudo ./vm-deploy-merge.sh \
+#   sudo ./bootler.sh \
 #     --repo owner/repo \
 #     [--project-dir /opt/project] \
 #     [--server-name example.com] \
