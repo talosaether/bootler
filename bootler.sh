@@ -58,6 +58,11 @@ DOTFILES_PACKAGES="${DOTFILES_PACKAGES:-}"       # Space-separated list of packa
 DOTFILES_REF="${DOTFILES_REF:-}"                 # Optional: git reference (branch/tag)
 DOTFILES_STOW_FLAGS="${DOTFILES_STOW_FLAGS:-}"   # Additional flags for stow
 
+# TMUX Configuration
+TMUX_PLUGIN_MANAGER_PATH="${TMUX_PLUGIN_MANAGER_PATH:-$HOME/.tmux/plugins}"  # TPM path
+TMUX_INSTALL_TPM="${TMUX_INSTALL_TPM:-1}"                                    # Install TPM by default
+TMUX_MINIMAL_CONFIG="${TMUX_MINIMAL_CONFIG:-1}"                              # Install minimal config if none exists
+
 # -------------------------- Helpers -----------------------------------------
 require_root() {
   if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -155,7 +160,7 @@ update_system() {
 
 install_build_tools() {
   log "Installing essential build tools..."
-  apt_install build-essential curl wget git ca-certificates unzip gnupg lsb-release jq yq tree vim nano openssh-client ufw
+  apt_install build-essential curl wget git ca-certificates unzip gnupg lsb-release jq yq tree vim nano openssh-client ufw tmux
   success "Build tools installed"
 }
 
@@ -348,6 +353,77 @@ NVIM
   else
     warn "Neovim configuration already exists; skipping minimal config"
   fi
+}
+
+install_tmux() {
+  log "Setting up TMUX with TPM and configuration..."
+  
+  # Ensure tmux is installed (should be from build tools)
+  if ! command -v tmux >/dev/null 2>&1; then
+    warn "TMUX not found; installing via apt"
+    apt_install tmux
+  fi
+  
+  # Set up TMUX plugin manager path for target user
+  local tmux_plugin_path="$TARGET_HOME/.tmux/plugins"
+  
+  if [[ "${TMUX_INSTALL_TPM}" -eq 1 ]]; then
+    log "Installing TMUX Plugin Manager (TPM)..."
+    run_as "mkdir -p '${tmux_plugin_path}'"
+    
+    if [[ ! -x "${tmux_plugin_path}/tpm/tpm" ]]; then
+      run_as "git clone --depth 1 https://github.com/tmux-plugins/tpm '${tmux_plugin_path}/tpm'" || true
+      success "TPM installed at ${tmux_plugin_path}/tpm"
+    else
+      warn "TPM already installed; skipping"
+    fi
+  fi
+  
+  # Install minimal TMUX configuration if none exists
+  if [[ "${TMUX_MINIMAL_CONFIG}" -eq 1 ]]; then
+    local has_config=0
+    
+    # Check for existing tmux config in common locations
+    if [[ -f "$TARGET_HOME/.tmux.conf" ]] || [[ -f "$TARGET_HOME/.config/tmux/tmux.conf" ]]; then
+      has_config=1
+    fi
+    
+    if [[ $has_config -eq 0 ]]; then
+      log "Installing minimal TMUX configuration"
+      run_as "mkdir -p ~/.config/tmux"
+      run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
+# Basic settings
+set -g mouse on
+set -g history-limit 10000
+set -g base-index 1
+set -g pane-base-index 1
+set -g renumber-windows on
+
+# Vim-like pane navigation
+bind -n C-h select-pane -L
+bind -n C-j select-pane -D
+bind -n C-k select-pane -U
+bind -n C-l select-pane -R
+
+# Environment variables to preserve
+set -g update-environment "SSH_AUTH_SOCK SSH_AGENT_PID SSH_CONNECTION SSH_CLIENT USER HOME PATH"
+
+# TPM plugins (if TPM is installed)
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'tmux-plugins/tmux-sensible'
+
+# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
+run '~/.tmux/plugins/tpm/tpm'
+TMUX
+      # Create symlink for backward compatibility
+      run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
+      success "Minimal TMUX configuration installed"
+    else
+      warn "TMUX configuration already exists; skipping minimal config"
+    fi
+  fi
+  
+  success "TMUX setup completed"
 }
 
 
@@ -699,6 +775,7 @@ main() {
   
   # Development Tools
   install_neovim
+  install_tmux
   setup_dotfiles
   install_additional_tools
   install_git_lfs
