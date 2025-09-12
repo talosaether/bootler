@@ -49,6 +49,15 @@ SSH_HARDEN=0               # Optional: disable SSH password auth
 SWAP_MB=0                  # Optional: create swapfile of N MB if none
 F2B_TRUSTED_IPS="${F2B_TRUSTED_IPS:-}"  # Optional: fail2ban whitelist (space-separated)
 
+# Neovim & Dotfiles Configuration
+NVIM_VERSION="${NVIM_VERSION:-0.10.2}"           # Neovim version to install
+NVIM_INSTALL_METHOD="${NVIM_INSTALL_METHOD:-appimage}"  # Installation method: appimage
+DOTFILES_REPO="${DOTFILES_REPO:-}"               # Optional: dotfiles repository URL
+DOTFILES_METHOD="${DOTFILES_METHOD:-stow}"       # Dotfiles method: stow or copy
+DOTFILES_PACKAGES="${DOTFILES_PACKAGES:-}"       # Space-separated list of packages for stow
+DOTFILES_REF="${DOTFILES_REF:-}"                 # Optional: git reference (branch/tag)
+DOTFILES_STOW_FLAGS="${DOTFILES_STOW_FLAGS:-}"   # Additional flags for stow
+
 # -------------------------- Helpers -----------------------------------------
 require_root() {
   if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -205,11 +214,140 @@ install_terraform() {
   success "Terraform installed"
 }
 
+# -------------------------- Dotfiles Helpers and Functions --------------
+clone_update_repo() {
+  local url="$1" dest="$2" ref="${3:-}"
+  if [[ -d "$dest/.git" ]]; then
+    git -C "$dest" fetch --tags --prune origin || true
+    if [[ -n "$ref" ]]; then
+      git -C "$dest" checkout -q "$ref" || true
+      git -C "$dest" pull --ff-only || true
+    else
+      git -C "$dest" checkout -q "$(git -C "$dest" symbolic-ref --short HEAD 2>/dev/null || echo main)" || true
+      git -C "$dest" pull --ff-only || true
+    fi
+  else
+    if [[ -n "$ref" ]]; then
+      git clone --depth 1 --branch "$ref" "$url" "$dest" || git clone "$url" "$dest"
+    else
+      git clone --depth 1 "$url" "$dest" || git clone "$url" "$dest"
+    fi
+  fi
+}
+
+setup_dotfiles() {
+  if [[ -z "${DOTFILES_REPO:-}" ]]; then
+    warn "No dotfiles repository specified; skipping dotfiles setup"
+    return 0
+  fi
+
+  log "Setting up dotfiles from ${DOTFILES_REPO}${DOTFILES_REF:+ (ref $DOTFILES_REF)}"
+  
+  local dots_dir="$TARGET_HOME/.dotfiles"
+  clone_update_repo "${DOTFILES_REPO}" "${dots_dir}" "${DOTFILES_REF:-}"
+  chown -R "$TARGET_USER:$TARGET_USER" "${dots_dir}"
+  
+  local method="${DOTFILES_METHOD:-stow}"
+  
+  if [[ "${method}" == "stow" ]]; then
+    if ! command -v stow >/dev/null 2>&1; then
+      warn "stow not found; installing stow"
+      apt_install stow
+    fi
+    
+    if ! command -v stow >/dev/null 2>&1; then
+      warn "stow installation failed; falling back to copy method"
+      method="copy"
+    fi
+  fi
+
+  if [[ "${method}" == "stow" && -n "${DOTFILES_PACKAGES:-}" ]]; then
+    log "Using stow method for dotfiles packages: ${DOTFILES_PACKAGES}"
+    run_as "cd '${dots_dir}' && for pkg in ${DOTFILES_PACKAGES}; do [[ -d \"\$pkg\" ]] || continue; echo '[*] stow \$pkg'; stow ${DOTFILES_STOW_FLAGS:-} -t '${TARGET_HOME}' \"\$pkg\"; done"
+  elif [[ "${method}" == "copy" ]]; then
+    log "Using copy method for dotfiles"
+    run_as "cp -a '${dots_dir}/.' '${TARGET_HOME}/'" || true
+  else
+    warn "No dotfiles packages specified for stow method; skipping dotfiles application"
+  fi
+  
+  success "Dotfiles setup completed"
+}
+
 # -------------------------- Development Tools -------------------------------
 install_neovim() {
-  log "Installing Neovim..."
-  apt_install neovim
-  success "Neovim installed"
+  log "Installing Neovim v${NVIM_VERSION} via ${NVIM_INSTALL_METHOD}..."
+  
+  # Check if already installed with correct version
+  if command -v nvim >/dev/null 2>&1; then
+    if nvim --version | head -n1 | grep -q "NVIM v${NVIM_VERSION}"; then
+      warn "Neovim v${NVIM_VERSION} already installed; skipping"
+      return 0
+    else
+      warn "Different Neovim version detected: $(nvim --version | head -n1)"
+      log "Proceeding with v${NVIM_VERSION} installation"
+    fi
+  fi
+  
+  if [[ "${NVIM_INSTALL_METHOD}" == "appimage" ]]; then
+    # Install via AppImage (x86_64 only)
+    if [[ "$(uname -m)" != "x86_64" ]]; then
+      error "AppImage method only supports x86_64 architecture. Current: $(uname -m)"
+      warn "Falling back to package manager installation"
+      apt_install neovim
+      success "Neovim installed via package manager"
+      return 0
+    fi
+    
+    log "Downloading Neovim AppImage v${NVIM_VERSION}..."
+    curl_retry -o /tmp/nvim.appimage \
+      "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim.appimage"
+    
+    chmod +x /tmp/nvim.appimage
+    
+    log "Extracting AppImage..."
+    cd /tmp && /tmp/nvim.appimage --appimage-extract >/dev/null
+    
+    # Move to opt and create symlink
+    mv squashfs-root "/opt/nvim-v${NVIM_VERSION}"
+    ln -sf "/opt/nvim-v${NVIM_VERSION}/usr/bin/nvim" /usr/local/bin/nvim
+    
+    # Clean up
+    rm -f /tmp/nvim.appimage
+    
+    # Verify installation
+    if nvim --version | head -n1 | grep -q "NVIM v${NVIM_VERSION}"; then
+      success "Neovim v${NVIM_VERSION} installed via AppImage"
+    else
+      error "Neovim installation verification failed"
+      exit 1
+    fi
+  else
+    error "Unsupported NVIM_INSTALL_METHOD: ${NVIM_INSTALL_METHOD}"
+    warn "Falling back to package manager installation"
+    apt_install neovim
+    success "Neovim installed via package manager"
+  fi
+  
+  # Install minimal config if no existing config
+  install -d -m 700 "$TARGET_HOME/.config"
+  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
+  
+  if [[ ! -f "$TARGET_HOME/.config/nvim/init.lua" ]]; then
+    log "Installing minimal Neovim configuration"
+    run_as "mkdir -p ~/.config/nvim"
+    run_as "cat > ~/.config/nvim/init.lua" <<'NVIM'
+vim.o.number = true
+vim.o.relativenumber = true
+vim.o.termguicolors = true
+vim.o.expandtab = true
+vim.o.shiftwidth = 2
+vim.o.tabstop = 2
+NVIM
+    success "Minimal Neovim configuration installed"
+  else
+    warn "Neovim configuration already exists; skipping minimal config"
+  fi
 }
 
 
@@ -561,6 +699,7 @@ main() {
   
   # Development Tools
   install_neovim
+  setup_dotfiles
   install_additional_tools
   install_git_lfs
 
