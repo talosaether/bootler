@@ -10,11 +10,12 @@ It installs the common development stack (Docker, Node, Python, Terraform, nginx
 ## ✨ What Bootler does
 
 - Updates and primes Ubuntu (22.04/24.04 LTS friendly)
-- Installs: **Docker** (+ compose plugin, log rotation), **Node LTS** (via nvm + pnpm), **Python 3** (+ pipx), **Terraform**, **Neovim**, **Git LFS**, DB clients
+- Installs: **Docker** (+ compose plugin, log rotation), **Node LTS** (via nvm + pnpm), **Python 3** (+ pipx), **Terraform**, **Neovim** (pinned version via AppImage + minimal config), **Git LFS**, DB clients
 - Security: **UFW** (with sane defaults), **fail2ban** for SSH, **unattended-upgrades**, optional **SSH password disable**, optional **swapfile**
 - SSH: generates **SSH key** for secure access
 - Observability/hygiene: **journald** size caps, **logrotate** for app logs, **systemd-timesyncd**
 - Environment: creates **project directory** structure with proper permissions
+- Dotfiles: optional **dotfiles repository cloning** with stow or copy methods
 - Reverse proxy: configures **nginx** to forward to your app on a configurable upstream port (WebSocket-safe)
 
 ---
@@ -75,6 +76,13 @@ When it finishes, Bootler will print the "next steps" and a URL to test:
 | `SSH_KEY_EMAIL` | `dev@example.com` | Comment for the generated `~/.ssh/id_ed25519` key. |
 | `F2B_TRUSTED_IPS` | _(unset)_ | Alternative to the `--fail2ban-trusted` flag. |
 | `DEBUG` | `0` | Set to `1` to enable `set -x` shell tracing for verbose logs. |
+| `NVIM_VERSION` | `0.10.2` | Neovim version to install via AppImage. |
+| `NVIM_INSTALL_METHOD` | `appimage` | Installation method for Neovim (currently only `appimage`). |
+| `DOTFILES_REPO` | _(unset)_ | Optional URL of dotfiles repository to clone and apply. |
+| `DOTFILES_METHOD` | `stow` | Method to apply dotfiles: `stow` (symlinks) or `copy` (direct copy). |
+| `DOTFILES_PACKAGES` | _(unset)_ | Space-separated list of packages for stow method. |
+| `DOTFILES_REF` | _(unset)_ | Optional git reference (branch/tag) for dotfiles repo. |
+| `DOTFILES_STOW_FLAGS` | _(unset)_ | Additional flags to pass to stow command. |
 
 ---
 
@@ -93,7 +101,8 @@ Bootler is organized into small, idempotent functions you can skim or run indepe
 - `install_nodejs()` – Installs Node LTS via **nvm** for the target user; enables **corepack** + **pnpm**.
 - `install_docker()` – Installs Docker Engine + compose plugin; enables service; adds user to `docker` group.
 - `install_terraform()` – Installs HashiCorp Terraform from official apt repo.
-- `install_neovim()` – Installs Neovim.
+- `install_neovim()` – Installs Neovim via AppImage (pinned version) with minimal configuration.
+- `setup_dotfiles()` – Clones and applies dotfiles repository using stow or copy method.
 - `install_git_lfs()` – Installs Git LFS and runs `git lfs install`.
 - `install_database_clients()` – Installs Postgres + MySQL/MariaDB client tools.
 
@@ -199,6 +208,16 @@ sudo ./bootler.sh \
 sudo ./bootler.sh \
   --open-dev-ports \
   --server-name _
+```
+
+**With dotfiles setup:**
+
+```bash
+sudo DOTFILES_REPO="https://github.com/username/dotfiles.git" \
+     DOTFILES_PACKAGES="nvim zsh git" \
+     ./bootler.sh \
+  --server-name example.com \
+  --upstream-port 3000
 ```
 
 ---
