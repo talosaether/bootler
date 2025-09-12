@@ -374,16 +374,13 @@ install_tmux() {
     fi
   fi
   
-  success "TMUX setup completed (TPM installed, configuration will be provided by dotfiles)"
-}
-
-# Install minimal tmux config as fallback if dotfiles don't provide one
-install_tmux_fallback_config() {
-  # Only install fallback if no tmux config exists and no dotfiles repo is configured
-  if [[ -z "${DOTFILES_REPO:-}" ]] && [[ ! -f "$TARGET_HOME/.tmux.conf" ]] && [[ ! -f "$TARGET_HOME/.config/tmux/tmux.conf" ]]; then
-    log "Installing minimal TMUX fallback configuration (no dotfiles configured)"
-    run_as "mkdir -p ~/.config/tmux"
-    run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
+  # Install minimal config (will be overwritten by dotfiles if present)
+  install -d -m 700 "$TARGET_HOME/.config"
+  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
+  
+  log "Installing minimal TMUX configuration"
+  run_as "mkdir -p ~/.config/tmux"
+  run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
 # Basic settings
 set -g mouse on
 set -g history-limit 10000
@@ -407,13 +404,12 @@ set -g @plugin 'tmux-plugins/tmux-sensible'
 # Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
 run '~/.tmux/plugins/tpm/tpm'
 TMUX
-    # Create symlink for backward compatibility
-    run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
-    success "Minimal TMUX fallback configuration installed"
-  else
-    log "TMUX configuration exists or will be provided by dotfiles; skipping fallback"
-  fi
+  
+  # Create symlink for backward compatibility
+  run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
+  success "Minimal TMUX configuration installed"
 }
+
 
 
 # -------------------------- Security & Auth ---------------------------------
@@ -766,7 +762,6 @@ main() {
   install_neovim
   install_tmux
   setup_dotfiles
-  install_tmux_fallback_config
   install_additional_tools
   install_git_lfs
 

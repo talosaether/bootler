@@ -80,7 +80,6 @@ When it finishes, Bootler will print the "next steps" and a URL to test:
 | `NVIM_INSTALL_METHOD` | `appimage` | Installation method for Neovim (currently only `appimage`). |
 | `TMUX_PLUGIN_MANAGER_PATH` | `$HOME/.tmux/plugins` | Path for TMUX Plugin Manager (TPM) installation. |
 | `TMUX_INSTALL_TPM` | `1` | Install TMUX Plugin Manager (set to `0` to skip). |
-| `TMUX_MINIMAL_CONFIG` | `1` | Install minimal TMUX configuration if none exists (set to `0` to skip). |
 | `DOTFILES_REPO` | _(unset)_ | Optional URL of dotfiles repository to clone and apply. |
 | `DOTFILES_METHOD` | `stow` | Method to apply dotfiles: `stow` (symlinks) or `copy` (direct copy). |
 | `DOTFILES_PACKAGES` | _(unset)_ | Space-separated list of packages for stow method. |
