@@ -61,7 +61,6 @@ DOTFILES_STOW_FLAGS="${DOTFILES_STOW_FLAGS:-}"   # Additional flags for stow
 # TMUX Configuration
 TMUX_PLUGIN_MANAGER_PATH="${TMUX_PLUGIN_MANAGER_PATH:-$HOME/.tmux/plugins}"  # TPM path
 TMUX_INSTALL_TPM="${TMUX_INSTALL_TPM:-1}"                                    # Install TPM by default
-TMUX_MINIMAL_CONFIG="${TMUX_MINIMAL_CONFIG:-1}"                              # Install minimal config if none exists
 
 # -------------------------- Helpers -----------------------------------------
 require_root() {
@@ -352,7 +351,7 @@ NVIM
 }
 
 install_tmux() {
-  log "Setting up TMUX with TPM and configuration..."
+  log "Setting up TMUX with TPM..."
   
   # Ensure tmux is installed (should be from build tools)
   if ! command -v tmux >/dev/null 2>&1; then
@@ -375,40 +374,7 @@ install_tmux() {
     fi
   fi
   
-  # Install minimal TMUX configuration (will be overwritten by dotfiles if present)
-  if [[ "${TMUX_MINIMAL_CONFIG}" -eq 1 ]]; then
-    log "Installing minimal TMUX configuration"
-    run_as "mkdir -p ~/.config/tmux"
-    run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
-# Basic settings
-set -g mouse on
-set -g history-limit 10000
-set -g base-index 1
-set -g pane-base-index 1
-set -g renumber-windows on
-
-# Vim-like pane navigation
-bind -n C-h select-pane -L
-bind -n C-j select-pane -D
-bind -n C-k select-pane -U
-bind -n C-l select-pane -R
-
-# Environment variables to preserve
-set -g update-environment "SSH_AUTH_SOCK SSH_AGENT_PID SSH_CONNECTION SSH_CLIENT USER HOME PATH"
-
-# TPM plugins (if TPM is installed)
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'tmux-plugins/tmux-sensible'
-
-# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
-run '~/.tmux/plugins/tpm/tpm'
-TMUX
-    # Create symlink for backward compatibility
-    run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
-    success "Minimal TMUX configuration installed"
-  fi
-  
-  success "TMUX setup completed"
+  success "TMUX setup completed (configuration will be provided by dotfiles)"
 }
 
 
@@ -814,4 +780,3 @@ main() {
 }
 
 main "$@"
-
