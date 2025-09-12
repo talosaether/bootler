@@ -267,11 +267,11 @@ setup_dotfiles() {
   fi
 
   if [[ "${method}" == "stow" && -n "${DOTFILES_PACKAGES:-}" ]]; then
-    log "Using stow method for dotfiles packages: ${DOTFILES_PACKAGES}"
-    run_as "cd '${dots_dir}' && for pkg in ${DOTFILES_PACKAGES}; do [[ -d \"\$pkg\" ]] || continue; echo '[*] stow \$pkg'; stow ${DOTFILES_STOW_FLAGS:-} -t '${TARGET_HOME}' \"\$pkg\"; done"
+    log "Using stow method for dotfiles packages: ${DOTFILES_PACKAGES} (with destructive overwrite)"
+    run_as "cd '${dots_dir}' && for pkg in ${DOTFILES_PACKAGES}; do [[ -d \"\$pkg\" ]] || continue; echo '[*] stow \$pkg'; stow --restow ${DOTFILES_STOW_FLAGS:-} -t '${TARGET_HOME}' \"\$pkg\"; done"
   elif [[ "${method}" == "copy" ]]; then
-    log "Using copy method for dotfiles"
-    run_as "cp -a '${dots_dir}/.' '${TARGET_HOME}/'" || true
+    log "Using copy method for dotfiles (with destructive overwrite)"
+    run_as "cp -rf '${dots_dir}/.' '${TARGET_HOME}/'" || true
   else
     warn "No dotfiles packages specified for stow method; skipping dotfiles application"
   fi
@@ -334,14 +334,13 @@ install_neovim() {
     success "Neovim installed via package manager"
   fi
   
-  # Install minimal config if no existing config
+  # Install minimal config (will be overwritten by dotfiles if present)
   install -d -m 700 "$TARGET_HOME/.config"
   chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
   
-  if [[ ! -f "$TARGET_HOME/.config/nvim/init.lua" ]]; then
-    log "Installing minimal Neovim configuration"
-    run_as "mkdir -p ~/.config/nvim"
-    run_as "cat > ~/.config/nvim/init.lua" <<'NVIM'
+  log "Installing minimal Neovim configuration"
+  run_as "mkdir -p ~/.config/nvim"
+  run_as "cat > ~/.config/nvim/init.lua" <<'NVIM'
 vim.o.number = true
 vim.o.relativenumber = true
 vim.o.termguicolors = true
@@ -349,10 +348,7 @@ vim.o.expandtab = true
 vim.o.shiftwidth = 2
 vim.o.tabstop = 2
 NVIM
-    success "Minimal Neovim configuration installed"
-  else
-    warn "Neovim configuration already exists; skipping minimal config"
-  fi
+  success "Minimal Neovim configuration installed"
 }
 
 install_tmux() {
@@ -379,19 +375,11 @@ install_tmux() {
     fi
   fi
   
-  # Install minimal TMUX configuration if none exists
+  # Install minimal TMUX configuration (will be overwritten by dotfiles if present)
   if [[ "${TMUX_MINIMAL_CONFIG}" -eq 1 ]]; then
-    local has_config=0
-    
-    # Check for existing tmux config in common locations
-    if [[ -f "$TARGET_HOME/.tmux.conf" ]] || [[ -f "$TARGET_HOME/.config/tmux/tmux.conf" ]]; then
-      has_config=1
-    fi
-    
-    if [[ $has_config -eq 0 ]]; then
-      log "Installing minimal TMUX configuration"
-      run_as "mkdir -p ~/.config/tmux"
-      run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
+    log "Installing minimal TMUX configuration"
+    run_as "mkdir -p ~/.config/tmux"
+    run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
 # Basic settings
 set -g mouse on
 set -g history-limit 10000
@@ -415,12 +403,9 @@ set -g @plugin 'tmux-plugins/tmux-sensible'
 # Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
 run '~/.tmux/plugins/tpm/tpm'
 TMUX
-      # Create symlink for backward compatibility
-      run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
-      success "Minimal TMUX configuration installed"
-    else
-      warn "TMUX configuration already exists; skipping minimal config"
-    fi
+    # Create symlink for backward compatibility
+    run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
+    success "Minimal TMUX configuration installed"
   fi
   
   success "TMUX setup completed"
