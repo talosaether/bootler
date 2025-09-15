@@ -463,7 +463,7 @@ setup_firewall() {
   fi
   ufw allow 80,443/tcp || true
   if [[ "$OPEN_DEV_PORTS" -eq 1 ]]; then
-    ufw allow 3000,8000/tcp || true
+    ufw allow 3000,5000,8000/tcp || true
   fi
   ufw --force enable || true
   success "Firewall configured"
