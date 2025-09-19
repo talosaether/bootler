@@ -49,18 +49,6 @@ SSH_HARDEN=0               # Optional: disable SSH password auth
 SWAP_MB=0                  # Optional: create swapfile of N MB if none
 F2B_TRUSTED_IPS="${F2B_TRUSTED_IPS:-}"  # Optional: fail2ban whitelist (space-separated)
 
-# Neovim & Dotfiles Configuration
-NVIM_VERSION="${NVIM_VERSION:-0.10.2}"           # Neovim version to install
-NVIM_INSTALL_METHOD="${NVIM_INSTALL_METHOD:-appimage}"  # Installation method: appimage
-DOTFILES_REPO="${DOTFILES_REPO:-}"               # Optional: dotfiles repository URL
-DOTFILES_METHOD="${DOTFILES_METHOD:-stow}"       # Dotfiles method: stow or copy
-DOTFILES_PACKAGES="${DOTFILES_PACKAGES:-}"       # Space-separated list of packages for stow
-DOTFILES_REF="${DOTFILES_REF:-}"                 # Optional: git reference (branch/tag)
-DOTFILES_STOW_FLAGS="${DOTFILES_STOW_FLAGS:-}"   # Additional flags for stow
-
-# TMUX Configuration
-TMUX_PLUGIN_MANAGER_PATH="${TMUX_PLUGIN_MANAGER_PATH:-$HOME/.tmux/plugins}"  # TPM path
-TMUX_INSTALL_TPM="${TMUX_INSTALL_TPM:-1}"                                    # Install TPM by default
 
 # -------------------------- Helpers -----------------------------------------
 require_root() {
@@ -218,197 +206,7 @@ install_terraform() {
   success "Terraform installed"
 }
 
-# -------------------------- Dotfiles Helpers and Functions --------------
-clone_update_repo() {
-  local url="$1" dest="$2" ref="${3:-}"
-  if [[ -d "$dest/.git" ]]; then
-    git -C "$dest" fetch --tags --prune origin || true
-    if [[ -n "$ref" ]]; then
-      git -C "$dest" checkout -q "$ref" || true
-      git -C "$dest" pull --ff-only || true
-    else
-      git -C "$dest" checkout -q "$(git -C "$dest" symbolic-ref --short HEAD 2>/dev/null || echo main)" || true
-      git -C "$dest" pull --ff-only || true
-    fi
-  else
-    if [[ -n "$ref" ]]; then
-      git clone --depth 1 --branch "$ref" "$url" "$dest" || git clone "$url" "$dest"
-    else
-      git clone --depth 1 "$url" "$dest" || git clone "$url" "$dest"
-    fi
-  fi
-}
 
-setup_dotfiles() {
-  if [[ -z "${DOTFILES_REPO:-}" ]]; then
-    warn "No dotfiles repository specified; skipping dotfiles setup"
-    return 0
-  fi
-
-  log "Setting up dotfiles from ${DOTFILES_REPO}${DOTFILES_REF:+ (ref $DOTFILES_REF)}"
-  
-  local dots_dir="$TARGET_HOME/.dotfiles"
-  clone_update_repo "${DOTFILES_REPO}" "${dots_dir}" "${DOTFILES_REF:-}"
-  chown -R "$TARGET_USER:$TARGET_USER" "${dots_dir}"
-  
-  local method="${DOTFILES_METHOD:-stow}"
-  
-  if [[ "${method}" == "stow" ]]; then
-    if ! command -v stow >/dev/null 2>&1; then
-      warn "stow not found; installing stow"
-      apt_install stow
-    fi
-    
-    if ! command -v stow >/dev/null 2>&1; then
-      warn "stow installation failed; falling back to copy method"
-      method="copy"
-    fi
-  fi
-
-  if [[ "${method}" == "stow" && -n "${DOTFILES_PACKAGES:-}" ]]; then
-    log "Using stow method for dotfiles packages: ${DOTFILES_PACKAGES} (with destructive overwrite)"
-    run_as "cd '${dots_dir}' && for pkg in ${DOTFILES_PACKAGES}; do [[ -d \"\$pkg\" ]] || continue; echo '[*] stow \$pkg'; stow --restow ${DOTFILES_STOW_FLAGS:-} -t '${TARGET_HOME}' \"\$pkg\"; done"
-  elif [[ "${method}" == "copy" ]]; then
-    log "Using copy method for dotfiles (with destructive overwrite)"
-    run_as "cp -rf '${dots_dir}/.' '${TARGET_HOME}/'" || true
-  else
-    warn "No dotfiles packages specified for stow method; skipping dotfiles application"
-  fi
-  
-  success "Dotfiles setup completed"
-}
-
-# -------------------------- Development Tools -------------------------------
-install_neovim() {
-  log "Installing Neovim v${NVIM_VERSION} via ${NVIM_INSTALL_METHOD}..."
-  
-  # Check if already installed with correct version
-  if command -v nvim >/dev/null 2>&1; then
-    if nvim --version | head -n1 | grep -q "NVIM v${NVIM_VERSION}"; then
-      warn "Neovim v${NVIM_VERSION} already installed; skipping"
-      return 0
-    else
-      warn "Different Neovim version detected: $(nvim --version | head -n1)"
-      log "Proceeding with v${NVIM_VERSION} installation"
-    fi
-  fi
-  
-  if [[ "${NVIM_INSTALL_METHOD}" == "appimage" ]]; then
-    # Install via AppImage (x86_64 only)
-    if [[ "$(uname -m)" != "x86_64" ]]; then
-      error "AppImage method only supports x86_64 architecture. Current: $(uname -m)"
-      warn "Falling back to package manager installation"
-      apt_install neovim
-      success "Neovim installed via package manager"
-      return 0
-    fi
-    
-    log "Downloading Neovim AppImage v${NVIM_VERSION}..."
-    curl_retry -o /tmp/nvim.appimage \
-      "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim.appimage"
-    
-    chmod +x /tmp/nvim.appimage
-    
-    log "Extracting AppImage..."
-    cd /tmp && /tmp/nvim.appimage --appimage-extract >/dev/null
-    
-    # Move to opt and create symlink
-    mv squashfs-root "/opt/nvim-v${NVIM_VERSION}"
-    ln -sf "/opt/nvim-v${NVIM_VERSION}/usr/bin/nvim" /usr/local/bin/nvim
-    
-    # Clean up
-    rm -f /tmp/nvim.appimage
-    
-    # Verify installation
-    if nvim --version | head -n1 | grep -q "NVIM v${NVIM_VERSION}"; then
-      success "Neovim v${NVIM_VERSION} installed via AppImage"
-    else
-      error "Neovim installation verification failed"
-      exit 1
-    fi
-  else
-    error "Unsupported NVIM_INSTALL_METHOD: ${NVIM_INSTALL_METHOD}"
-    warn "Falling back to package manager installation"
-    apt_install neovim
-    success "Neovim installed via package manager"
-  fi
-  
-  # Install minimal config (will be overwritten by dotfiles if present)
-  install -d -m 700 "$TARGET_HOME/.config"
-  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
-  
-  log "Installing minimal Neovim configuration"
-  run_as "mkdir -p ~/.config/nvim"
-  run_as "cat > ~/.config/nvim/init.lua" <<'NVIM'
-vim.o.number = true
-vim.o.relativenumber = true
-vim.o.termguicolors = true
-vim.o.expandtab = true
-vim.o.shiftwidth = 2
-vim.o.tabstop = 2
-NVIM
-  success "Minimal Neovim configuration installed"
-}
-
-install_tmux() {
-  log "Setting up TMUX with TPM..."
-  
-  # Ensure tmux is installed (should be from build tools)
-  if ! command -v tmux >/dev/null 2>&1; then
-    warn "TMUX not found; installing via apt"
-    apt_install tmux
-  fi
-  
-  # Set up TMUX plugin manager path for target user
-  local tmux_plugin_path="$TARGET_HOME/.tmux/plugins"
-  
-  if [[ "${TMUX_INSTALL_TPM}" -eq 1 ]]; then
-    log "Installing TMUX Plugin Manager (TPM)..."
-    run_as "mkdir -p '${tmux_plugin_path}'"
-    
-    if [[ ! -x "${tmux_plugin_path}/tpm/tpm" ]]; then
-      run_as "git clone --depth 1 https://github.com/tmux-plugins/tpm '${tmux_plugin_path}/tpm'" || true
-      success "TPM installed at ${tmux_plugin_path}/tpm"
-    else
-      warn "TPM already installed; skipping"
-    fi
-  fi
-  
-  # Install minimal config (will be overwritten by dotfiles if present)
-  install -d -m 700 "$TARGET_HOME/.config"
-  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
-  
-  log "Installing minimal TMUX configuration"
-  run_as "mkdir -p ~/.config/tmux"
-  run_as "cat > ~/.config/tmux/tmux.conf" <<'TMUX'
-# Basic settings
-set -g mouse on
-set -g history-limit 10000
-set -g base-index 1
-set -g pane-base-index 1
-set -g renumber-windows on
-
-# Vim-like pane navigation
-bind -n C-h select-pane -L
-bind -n C-j select-pane -D
-bind -n C-k select-pane -U
-bind -n C-l select-pane -R
-
-# Environment variables to preserve
-set -g update-environment "SSH_AUTH_SOCK SSH_AGENT_PID SSH_CONNECTION SSH_CLIENT USER HOME PATH"
-
-# TPM plugins (if TPM is installed)
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'tmux-plugins/tmux-sensible'
-
-# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
-run '~/.tmux/plugins/tpm/tpm'
-TMUX
-  
-  # Create symlink for backward compatibility
-  run_as "ln -sf ~/.config/tmux/tmux.conf ~/.tmux.conf"
-  success "Minimal TMUX configuration installed"
-}
 
 
 
@@ -463,7 +261,7 @@ setup_firewall() {
   fi
   ufw allow 80,443/tcp || true
   if [[ "$OPEN_DEV_PORTS" -eq 1 ]]; then
-    ufw allow 3000,5000,8000/tcp || true
+    ufw allow 3000,5000,5173,8000/tcp || true
   fi
   ufw --force enable || true
   success "Firewall configured"
@@ -759,9 +557,6 @@ main() {
   configure_docker_daemon
   
   # Development Tools
-  install_neovim
-  install_tmux
-  setup_dotfiles
   install_additional_tools
   install_git_lfs
 
